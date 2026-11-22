@@ -1,4 +1,3 @@
-const { login } = require("ws3-fca");
 const { createListenerSession } = require("./listener-session");
 const { classifyError } = require("./login-errors");
 
@@ -31,7 +30,7 @@ function snapshot(account) {
   };
 }
 
-function createAccount({ id, name, onMessage, onEvent, log }) {
+function createAccount({ id, name, onMessage, onEvent, log, fcaLogin }) {
   const account = {
     id,
     name,
@@ -82,6 +81,7 @@ function createAccount({ id, name, onMessage, onEvent, log }) {
       account.reconnectTimer = null;
       start();
     }, delay);
+    account.reconnectTimer.unref();
   }
 
   function onListenerEvent(api, err, event) {
@@ -164,7 +164,7 @@ function createAccount({ id, name, onMessage, onEvent, log }) {
     }
     account.loginInFlight = true;
     account.status = "connecting";
-    login({ appState: account.appState }, LOGIN_OPTIONS, onLoginResult);
+    fcaLogin({ appState: account.appState }, LOGIN_OPTIONS, onLoginResult);
   }
 
   function stop() {
@@ -196,7 +196,7 @@ function createAccountsEngine({ store, onMessage, onEvent, log, loginFn }) {
       entry.start();
       return { ok: true };
     }
-    entry = createAccount({ id: record.id, name: record.name, onMessage, onEvent, log });
+    entry = createAccount({ id: record.id, name: record.name, onMessage, onEvent, log, fcaLogin });
     accounts.set(idText, entry);
     entry.account.enabled = true;
     entry.account.appState = state || store.decrypt(idText);

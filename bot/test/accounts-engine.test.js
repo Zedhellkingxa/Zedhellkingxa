@@ -12,27 +12,14 @@ function fakeStore(records) {
   };
 }
 
-// محرك حقيقي مع تسجيل دخول وهمي عبر حقن login وهمي — نستبدل ws3-fca مؤقتاً
-function withFakeLogin(fakeLogin, fn) {
-  const Module = require("module");
-  const orig = Module.prototype.require;
-  Module.prototype.require = function (id) {
-    if (id === "ws3-fca") return { login: fakeLogin };
-    return orig.apply(this, arguments);
-  };
-  try {
-    delete require.cache[require.resolve("../accounts-engine")];
-    const engine = require("../accounts-engine");
-    return fn(engine);
-  } finally {
-    Module.prototype.require = orig;
-    delete require.cache[require.resolve("../accounts-engine")];
-  }
+function settle(ms = 40) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 test("two accounts run concurrently and stopping one leaves the other live", async () => {
   const logins = [];
-  await withFakeLogin((opts, loginOpts, cb) => {
+  const listeners = new Map();
+  const fakeLogin = (opts, loginOpts, cb) => {
     const id = opts.appState[0].value;
     logins.push(id);
     const api = {
@@ -40,78 +27,129 @@ test("two accounts run concurrently and stopping one leaves the other live", asy
       getAppState: () => opts.appState,
       logout: () => {},
       listenMqtt: async (onEvent) => {
-        setImmediate(() => onEvent(null, { type: "message", threadID: "t" + id, messageID: "m" + id }));
+        listeners.set(id, onEvent);
+        return () => listeners.delete(id);
+      },
+    };
+    setImmediate(() => cb(null, api));
+  };
+
+  const seen = [];
+  const engine = createAccountsEngine({
+    store: fakeStore([
+      { id: "1", name: "أ", enabled: true },
+      { id: "2", name: "ب", enabled: true },
+    ]),
+    onMessage: (account, event) => seen.push({ id: account.id, thread: event.threadID }),
+    onEvent: () => {},
+    log: silentLog,
+    loginFn: fakeLogin,
+  });
+
+  await engine.startAll();
+  await settle();
+
+  let statuses = engine.statuses();
+  assert.equal(statuses.length, 2);
+  assert.equal(logins.slice().sort().join(","), "1,2");
+  for (const s of statuses) {
+    assert.equal(s.status, "online", `account ${s.id} should be online`);
+    assert.equal(s.listenerActive, true);
+  }
+
+  listeners.get("1")(null, { type: "message", threadID: "t1", messageID: "m1" });
+  listeners.get("2")(null, { type: "message", threadID: "t2", messageID: "m2" });
+  await settle();
+  assert.deepEqual(seen.sort((a, b) => a.id - b.id), [
+    { id: "1", thread: "t1" },
+    { id: "2", thread: "t2" },
+  ]);
+
+  assert.equal(engine.stopAccount("1").ok, true);
+  statuses = engine.statuses();
+  const first = statuses.find((s) => s.id === "1");
+  const second = statuses.find((s) => s.id === "2");
+  assert.equal(first.status, "stopped");
+  assert.equal(first.listenerActive, false);
+  assert.equal(second.status, "online");
+  assert.equal(second.listenerActive, true);
+});
+
+test("startAll skips disabled accounts", async () => {
+  const engine = createAccountsEngine({
+    store: fakeStore([
+      { id: "1", name: "معطل", enabled: false },
+      { id: "2", name: "مفعل", enabled: true },
+    ]),
+    onMessage: () => {},
+    onEvent: () => {},
+    log: silentLog,
+    loginFn: (opts, o, cb) => cb(new Error("should not be called")),
+  });
+  await engine.startAll();
+  await settle();
+  const statuses = engine.statuses();
+  assert.equal(statuses.length, 1);
+  assert.equal(statuses[0].id, "2");
+});
+
+test("checkpoint on login marks needs_attention without crash or reconnect storm", async () => {
+  const fakeLogin = (opts, o, cb) => {
+    const err = new Error("Checkpoint required");
+    err.error = "login-approval";
+    cb(err, null);
+  };
+  const engine = createAccountsEngine({
+    store: fakeStore([{ id: "1", name: "أ", enabled: true }]),
+    onMessage: () => {},
+    onEvent: () => {},
+    log: silentLog,
+    loginFn: fakeLogin,
+  });
+  await engine.startAll();
+  await settle();
+  const s = engine.statusOf("1");
+  assert.ok(s);
+  assert.equal(s.loggedIn, false);
+  assert.equal(s.status, "needs_attention");
+});
+
+test("listener error on one account reconnects it without touching the other", async () => {
+  let fireError = null;
+  const fakeLogin = (opts, loginOpts, cb) => {
+    const id = opts.appState[0].value;
+    const api = {
+      ctx: { lastSeqId: "1" },
+      getAppState: () => opts.appState,
+      logout: () => {},
+      listenMqtt: async (onEvent) => {
+        if (id === "1") fireError = () => onEvent(new Error("mqtt dropped"));
         return () => {};
       },
     };
     setImmediate(() => cb(null, api));
-  }, async (mod) => {
-    const store = fakeStore([
+  };
+  const engine = createAccountsEngine({
+    store: fakeStore([
       { id: "1", name: "أ", enabled: true },
       { id: "2", name: "ب", enabled: true },
-    ]);
-    const seen = [];
-    const engine = createAccountsEngine({
-      store,
-      onMessage: (account, event) => seen.push({ id: account.id, thread: event.threadID }),
-      onEvent: () => {},
-      log: silentLog,
-    });
-
-    await engine.startAll();
-    // انتظار تسجيل الدخول والمستمع لكل حساب
-    await new Promise((r) => setImmediate(() => setImmediate(r)));
-    await new Promise((r) => setTimeout(r, 30));
-
-    let statuses = engine.statuses();
-    assert.equal(statuses.length, 2);
-    assert.equal(logins.sort().join(","), "1,2");
-    for (const s of statuses) {
-      assert.equal(s.status, "online", `account ${s.id} should be online`);
-      assert.equal(s.listenerActive, true);
-    }
-
-    // إيقاف الحساب الأول فقط
-    assert.equal(engine.stopAccount("1").ok, true);
-    statuses = engine.statuses();
-    const first = statuses.find((s) => s.id === "1");
-    const second = statuses.find((s) => s.id === "2");
-    assert.equal(first.status, "stopped");
-    assert.equal(first.listenerActive, false);
-    assert.equal(second.status, "online");
-    assert.equal(second.listenerActive, true);
+    ]),
+    onMessage: () => {},
+    onEvent: () => {},
+    log: silentLog,
+    loginFn: fakeLogin,
   });
-});
+  await engine.startAll();
+  await settle();
 
-test("startAll skips disabled accounts", async () => {
-  await withFakeLogin((opts, o, cb) => {
-    cb(new Error("should not be called"));
-  }, async (mod) => {
-    const store = fakeStore([
-      { id: "1", name: "معطل", enabled: false },
-      { id: "2", name: "مفعل", enabled: true },
-    ]);
-    const engine = createAccountsEngine({ store, onMessage: () => {}, onEvent: () => {}, log: silentLog });
-    await engine.startAll();
-    await new Promise((r) => setImmediate(() => setImmediate(r)));
-    const statuses = engine.statuses();
-    assert.equal(statuses.length, 1);
-    assert.equal(statuses[0].id, "2");
-  });
-});
+  fireError();
+  await settle();
 
-test("login failure with checkpoint marks needs_attention without crashing", async () => {
-  await withFakeLogin((opts, o, cb) => {
-    const err = new Error("Checkpoint required");
-    err.error = "login-approval";
-    cb(err, null);
-  }, async (mod) => {
-    const store = fakeStore([{ id: "1", name: "أ", enabled: true }]);
-    const engine = createAccountsEngine({ store, onMessage: () => {}, onEvent: () => {}, log: silentLog });
-    await engine.startAll();
-    await new Promise((r) => setImmediate(() => setImmediate(r)));
-    const s = engine.statusOf("1");
-    assert.ok(s);
-    assert.equal(s.loggedIn, false);
-  });
+  const first = engine.statusOf("1");
+  const second = engine.statusOf("2");
+  assert.equal(first.status, "reconnecting");
+  assert.equal(first.lastError, "transient");
+  assert.ok(first.reconnectAttempts >= 1);
+  assert.equal(second.status, "online");
+  assert.equal(second.reconnectAttempts, 0);
 });
