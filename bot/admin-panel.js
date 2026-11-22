@@ -274,16 +274,22 @@ function createAdminPanel({ password, engine, store, log }) {
     return sendJson(res, 404, { error: "not_found" });
   }
 
-  const server = http.createServer((req, res) => {
-    route(req, res).catch((error) => {
+  async function handle(req, res) {
+    try {
+      await route(req, res);
+    } catch (error) {
       log.error("panel", "خطأ في لوحة الكوكيز", { message: error.message });
       if (!res.headersSent) {
         sendJson(res, error.message === "body_too_large" ? 413 : 500, { error: "request_failed" });
       }
-    });
-  });
+    }
+  }
+
+  // Standalone server is retained for isolated tests.
+  const server = http.createServer(handle);
 
   return {
+    handle,
     listen(port) {
       return new Promise((resolve, reject) => {
         server.once("error", reject);
@@ -294,7 +300,10 @@ function createAdminPanel({ password, engine, store, log }) {
       });
     },
     close() {
-      return new Promise((resolve) => server.close(() => resolve()));
+      return new Promise((resolve, reject) => {
+        if (!server.listening) return resolve();
+        server.close((error) => error ? reject(error) : resolve());
+      });
     },
   };
 }

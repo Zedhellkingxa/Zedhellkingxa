@@ -330,16 +330,22 @@ function updateCookies(body) {
   return { ok: true };
 }
 
+let adminPanel = null;
+
 const healthServer = createHealthServer({
   connectionState: conn,
   adminToken: config.botAdminToken,
   handlers: { testSend, updateCookies },
   log,
+  externalRoutes: (req, res) => {
+    if (adminPanel) return adminPanel.handle(req, res);
+    res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify({ error: "not_found" }));
+  },
 });
 
 let accountsStore = null;
 let accountsEngine = null;
-let adminPanel = null;
 
 function startMultiAccountEngine() {
   try {
@@ -386,7 +392,6 @@ function shutdown(reason, exitCode = 0) {
   stopListener("shutdown");
   if (accountsEngine) accountsEngine.stopAll();
   healthServer.close().catch(() => {});
-  if (adminPanel) adminPanel.close().catch(() => {});
   releaseLock();
   process.exit(exitCode);
 }
@@ -408,8 +413,7 @@ async function boot() {
 
   if (config.cookiePanelPassword) {
     if (startMultiAccountEngine()) {
-      const panelPort = await adminPanel.listen(config.port);
-      log.info("panel", "لوحة ZEDHELLKING تعمل على /admin/cookies", { port: panelPort });
+      log.info("panel", "لوحة ZEDHELLKING تعمل على /admin/cookies", { port });
       accountsEngine.startAll();
     }
   } else {
