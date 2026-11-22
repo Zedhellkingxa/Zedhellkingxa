@@ -64,7 +64,7 @@ function createAccountsStore({ filePath, password, log }) {
       if (!parsed || typeof parsed !== "object" || !parsed.accounts) throw new Error("bad_shape");
       if (parsed.version !== VERSION) throw new Error("bad_version");
       for (const [id, record] of Object.entries(parsed.accounts)) {
-        decryptState(record, password);
+        decryptState(record.cookies, password);
         data.accounts[id] = record;
       }
       data.nextId = Number(parsed.nextId) || 1;
@@ -159,19 +159,21 @@ function createAccountsStore({ filePath, password, log }) {
     },
 
     list() {
-      return Object.values(data.accounts).map((account) => ({
-        id: account.id,
-        name: account.name,
-        enabled: account.enabled,
-        createdAt: account.createdAt,
-        ...summaryOf(() => {
-          try {
-            return decryptState(account.cookies, password);
-          } catch {
-            return [];
-          }
-        })(),
-      }));
+      return Object.values(data.accounts).map((account) => {
+        let summary = { cookiesCount: 0, hasCUser: false, hasXs: false };
+        try {
+          summary = summaryOf(decryptState(account.cookies, password));
+        } catch (error) {
+          log.error("accounts", "تعذر فك تشفير كوكيز الحساب", { id: account.id, message: error.message });
+        }
+        return {
+          id: account.id,
+          name: account.name,
+          enabled: account.enabled,
+          createdAt: account.createdAt,
+          ...summary,
+        };
+      });
     },
 
     decrypt(idText) {

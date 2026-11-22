@@ -178,7 +178,8 @@ function createAccount({ id, name, onMessage, onEvent, log }) {
   return { account, start, stop };
 }
 
-function createAccountsEngine({ store, onMessage, onEvent, log }) {
+function createAccountsEngine({ store, onMessage, onEvent, log, loginFn }) {
+  const fcaLogin = loginFn || require("ws3-fca").login;
   const accounts = new Map();
 
   async function startAccount(idText, state) {

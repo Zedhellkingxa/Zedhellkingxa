@@ -257,7 +257,7 @@ function createAdminPanel({ password, engine, store, log }) {
       return addAccount(req, res);
     }
 
-    const idMatch = /^\/admin\/cookies\/api\/accounts\/(\d+)$/.exec(pathname);
+    const idMatch = /^\/admin\/cookies\/api\/accounts\/(\d+)(\/toggle|\/reconnect)?$/.exec(pathname);
     if (idMatch) {
       const idText = idMatch[1];
       if (!requireLogin(req, res)) return;

@@ -51,7 +51,7 @@ test("add, list, rename, toggle, update and remove", () => {
   assert.equal(list.length, 2);
   assert.equal(list[0].cookiesCount, 2);
   assert.equal(list[0].hasCUser && list[0].hasXs, true);
-  assert.equal(list.some((x) => x.cookies), undefined);
+  assert.equal(list.some((x) => "cookies" in x), false);
 
   assert.equal(store.update(a.id, { name: "حساب ثاني" }).ok, false);
   assert.equal(store.update(a.id, { name: "معدل" }).ok, true);
