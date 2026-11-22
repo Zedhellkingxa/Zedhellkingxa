@@ -23,6 +23,7 @@ const SETTINGS = [
   { env: "LISTENER_SILENCE_WARN", key: "listenerSilenceWarn", type: "int", min: 60, max: 604800, def: 3600 },
   { env: "MONITORING_ENABLED", key: "monitoringEnabled", type: "bool", def: true },
   { env: "BOT_ADMIN_TOKEN", key: "botAdminToken", type: "secret", def: "" },
+  { env: "COOKIE_PANEL_PASSWORD", key: "cookiePanelPassword", type: "secret", def: "" },
   { env: "ALERT_THREAD_ID", key: "alertThreadId", type: "string", def: "" },
   { env: "APPSTATE_PATH", key: "appstatePath", type: "path", def: "" },
 ];

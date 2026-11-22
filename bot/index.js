@@ -12,6 +12,9 @@ const { computeBackoffDelay } = require("./backoff");
 const { createMessageDeduper } = require("./message-dedup");
 const { createMemoryMonitor } = require("./memory-monitor");
 const { createHealthServer } = require("./health-server");
+const { createAdminPanel } = require("./admin-panel");
+const { createAccountsStore } = require("./accounts-store");
+const { createAccountsEngine } = require("./accounts-engine");
 const { createKeepAlive } = require("./keep-alive");
 const { RESTART_EXIT_CODE } = require("./supervisor");
 
@@ -334,6 +337,41 @@ const healthServer = createHealthServer({
   log,
 });
 
+let accountsStore = null;
+let accountsEngine = null;
+let adminPanel = null;
+
+function startMultiAccountEngine() {
+  try {
+    accountsStore = createAccountsStore({
+      filePath: path.join(__dirname, "data", "accounts.enc.json"),
+      password: config.cookiePanelPassword,
+      log,
+    });
+    accountsEngine = createAccountsEngine({
+      store: accountsStore,
+      onMessage: (account, event) => {
+        log.info("accounts", "رسالة من حساب متزامن", { id: account.id, thread: event.threadID });
+      },
+      onEvent: () => {},
+      log,
+    });
+    adminPanel = createAdminPanel({
+      password: config.cookiePanelPassword,
+      engine: accountsEngine,
+      store: accountsStore,
+      log,
+    });
+    return true;
+  } catch (error) {
+    log.error("accounts", "تعذر بدء نظام الحسابات المتعددة", { message: error.message });
+    accountsStore = null;
+    accountsEngine = null;
+    adminPanel = null;
+    return false;
+  }
+}
+
 function shutdown(reason, exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -346,7 +384,9 @@ function shutdown(reason, exitCode = 0) {
   if (keepAlive) keepAlive.stop();
   persistSession();
   stopListener("shutdown");
+  if (accountsEngine) accountsEngine.stopAll();
   healthServer.close().catch(() => {});
+  if (adminPanel) adminPanel.close().catch(() => {});
   releaseLock();
   process.exit(exitCode);
 }
@@ -365,6 +405,16 @@ process.on("unhandledRejection", (reason) => {
 async function boot() {
   const port = await healthServer.listen(config.port);
   log.info("bot", "بدء تشغيل البوت", { port, supervised: isSupervised, pid: process.pid });
+
+  if (config.cookiePanelPassword) {
+    if (startMultiAccountEngine()) {
+      const panelPort = await adminPanel.listen(config.port);
+      log.info("panel", "لوحة ZEDHELLKING تعمل على /admin/cookies", { port: panelPort });
+      accountsEngine.startAll();
+    }
+  } else {
+    log.warn("panel", "لوحة الكوكيز معطلة — اضبط COOKIE_PANEL_PASSWORD لتفعيلها");
+  }
 
   if (config.monitoringEnabled) {
     monitorTimer = setInterval(monitorTick, config.healthCheckInterval * 1000);
